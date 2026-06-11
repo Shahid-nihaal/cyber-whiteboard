@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Cyber Whiteboard Air-Draw</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js" crossorigin="anonymous"></script>
+  
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body, html { width: 100%; height: 100%; overflow: hidden; background: #05060A; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    
+    #app-container { position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; }
+    
+    /* Active Air-Drawing Canvas Interaction Layers */
+    #canvas-container { position: relative; width: 100%; flex: 1; background: #000; }
+    video { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.35; z-index: 1; }
+    canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+
+    /* Interactive Sci-Fi Neon Control Dashboards */
+    #control-panel { position: relative; z-index: 3; background: rgba(11, 15, 25, 0.94); border-top: 2px solid #00D7FF; padding: 15px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; box-shadow: 0 -10px 30px rgba(0,215,255,0.15); }
+    .slider-group { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .slider-group label { color: #00D7FF; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; text-align: center; font-weight: 600; }
+    input[type=range] { -webkit-appearance: none; width: 100%; background: #141E30; height: 6px; border-radius: 3px; outline: none; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #00D7FF; box-shadow: 0 0 10px #00D7FF; cursor: pointer; }
+    
+    #wipe-btn { background: #CC1919; color: #FFF; border: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 13px; text-transform: uppercase; cursor: pointer; box-shadow: 0 0 15px rgba(204,25,25,0.4); transition: transform 0.1s ease; }
+    #wipe-btn:active { transform: scale(0.95); }
+    
+    #loading-shield { position: absolute; top:0; left:0; width:100%; height:100%; background:#05060A; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:15px; color:#00D7FF; font-weight:bold; letter-spacing:2px; }
+    .spinner { width: 40px; height: 40px; border: 4px solid rgba(0,215,255,0.1); border-top-color: #00D7FF; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(300deg); } }
+  </style>
+</head>
+<body>
+
+  <div id="loading-shield">
+    <div class="spinner"></div>
+    <div>INITIALIZING CYBER PIPELINE...</div>
+  </div>
+
+  <div id="app-container">
+    <div id="canvas-container">
+      <video id="webcam" autoplay playsinline></video>
+      <canvas id="paintCanvas"></canvas>
+    </div>
+
+    <div id="control-panel">
+      <div class="slider-group">
+        <label>Brush Radius Scale</label>
+        <input type="range" id="size-slider" min="2" max="100" value="12">
+      </div>
+      <div class="slider-group">
+        <label>Neon Color Palette Selector</label>
+        <input type="range" id="color-slider" min="0" max="3" value="0" step="1">
+      </div>
+      <button id="wipe-btn">Wipe Slate</button>
+    </div>
+  </div>
+
+  <script type="module">
+    // Configure Local Document Nodes
+    const video = document.getElementById("webcam");
+    const canvas = document.getElementById("paintCanvas");
+    const ctx = canvas.getContext("2d");
+    const sizeSlider = document.getElementById("size-slider");
+    const colorSlider = document.getElementById("color-slider");
+    const wipeBtn = document.getElementById("wipe-btn");
+    const loadingShield = document.getElementById("loading-shield");
+
+    let handLandmarker = undefined;
+    let runningMode = "VIDEO";
+    let lastVideoTime = -1;
+
+    // Neon Cyber Palette array configurations matching original core spec
+    const COLOR_PALETTE = [
+      "rgba(0, 215, 255, 1)",  // Neon Light Blue
+      "rgba(0, 255, 100, 1)",  // Laser Green
+      "rgba(255, 25, 150, 1)", // Cyber Pink
+      "rgba(255, 255, 255, 1)" // Pure White
+    ];
+
+    let strokesHistory = [];
+    let currentStroke = [];
+    let eraserCenter = null;
+    let isErasing = false;
+
+    // Rescale dimensions to capture entire mobile viewport sizes smoothly
+    function resizeCanvasBounds() {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      drawWhiteboardLayers();
+    }
+    window.addEventListener('resize', resizeCanvasBounds);
+
+    // Initialize Google's Compiled Machine Learning Pipeline directly via WebAssembly (WASM)
+    async function bootMediaPipeVision() {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker_full/float16/1/hand_landmarker_full.task",
+          delegate: "GPU" // Forces structural hardware browser graphics execution
+        },
+        runningMode: runningMode,
+        numHands: 1
+      });
+      startHardwareCamera();
+    }
+
+    function startHardwareCamera() {
+      const constraints = {
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      };
+      navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+        video.srcObject = stream;
+        video.addEventListener("loadeddata", () => {
+          loadingShield.style.display = "none";
+          resizeCanvasBounds();
+          predictWebcamFrames();
+        });
+      }).catch(err => alert("Camera permission rejected or unavailable: " + err));
+    }
+
+    async function predictWebcamFrames() {
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        let startTimeMs = performance.now();
+        const results = handLandmarker.detectForVideo(video, startTimeMs);
+
+        isErasing = false;
+        eraserCenter = null;
+
+        if (results.landmarks && results.landmarks.length > 0) {
+          const landmarks = results.landmarks[0];
+
+          // Key Hand Node Points mapping coordinates
+          const wrist = landmarks[0];
+          const thumbTip = landmarks[4];
+          const indexTip = landmarks[8];
+          const middleTip = landmarks[12];
+          const ringTip = landmarks[16];
+          const pinkyTip = landmarks[20];
+          const indexMcp = landmarks[5];
+          const middleMcp = landmarks[9];
+
+          const getDist = (ptA, ptB) => Math.hypot(ptA.x - ptB.x, ptA.y - ptB.y);
+
+          // Boolean calculations evaluating active joint finger configurations
+          let thumbOpen = getDist(thumbTip, wrist) > getDist(landmarks[2], wrist);
+          let indexOpen = getDist(indexTip, wrist) > getDist(indexMcp, wrist);
+          let middleOpen = getDist(middleTip, wrist) > getDist(middleMcp, wrist);
+          let ringOpen = getDist(ringTip, wrist) > getDist(landmarks[13], wrist);
+          let pinkyOpen = getDist(pinkyTip, wrist) > getDist(landmarks[17], wrist);
+
+          const sliderVal = parseFloat(sizeSlider.value);
+
+          // GESTURE MODE 1: Index + Thumb Open = Drawing Mode Vector Mapping
+          if (indexOpen && thumbOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            // Core Mobile Fix: Inverting relative landmark values directly to correct camera mirroring
+            const targetX = (1.0 - indexTip.x) * canvas.width;
+            const targetY = indexTip.y * canvas.height;
+
+            if (currentStroke.length === 0) {
+              currentStroke = {
+                color: COLOR_PALETTE[parseInt(colorSlider.value)],
+                thickness: Math.max(2.0, sliderVal * 0.35),
+                points: []
+              };
+              strokesHistory.push(currentStroke);
+            }
+            currentStroke.points.push({ x: targetX, y: targetY });
+          } 
+          // GESTURE MODE 2: Full Palm Open = Radial Realtime Canvas Erasing
+          else if (indexOpen && thumbOpen && middleOpen && ringOpen && pinkyOpen) {
+            currentStroke = []; // Close drawing line
+            isErasing = true;
+            
+            const eraseX = (1.0 - middleMcp.x) * canvas.width;
+            const eraseY = middleMcp.y * canvas.height;
+            const radius = Math.max(10.0, sliderVal * 1.2);
+            eraserCenter = { x: eraseX, y: eraseY, r: radius };
+
+            // Realtime array processing to isolate point elements matching coordinate boundaries
+            for (let i = 0; i < strokesHistory.length; i++) {
+              strokesHistory[i].points = strokesHistory[i].points.filter(pt => {
+                return Math.hypot(pt.x - eraseX, pt.y - eraseY) > radius;
+              });
+            }
+            strokesHistory = strokesHistory.filter(s => s.points.length > 0);
+          } else {
+            currentStroke = [];
+          }
+        } else {
+          currentStroke = [];
+        }
+        drawWhiteboardLayers();
+      }
+      window.requestAnimationFrame(predictWebcamFrames);
+    }
+
+    function drawWhiteboardLayers() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Vector stroke rendering block
+      for (let stroke of strokesHistory) {
+        if (stroke.points.length < 2) continue;
+        ctx.beginPath();
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = stroke.thickness;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        
+        for (let i = 1; i < stroke.points.length; i++) {
+          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+        ctx.stroke();
+      }
+
+      // Draw custom target overlay for real-time palm eraser tracking
+      if (isErasing && eraserCenter) {
+        ctx.beginPath();
+        ctx.arc(eraserCenter.x, eraserCenter.y, eraserCenter.r, 0, 2 * Math.PI);
+        ctx.strokeStyle = "rgba(0, 215, 255, 0.6)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(eraserCenter.x, eraserCenter.y, 3, 0, 2 * Math.PI);
+        ctx.fillStyle = "rgba(0, 215, 255, 0.9)";
+        ctx.fill();
+      }
+    }
+
+    wipeBtn.addEventListener("click", () => {
+      strokesHistory = [];
+      currentStroke = [];
+      drawWhiteboardLayers();
+    });
+
+    bootMediaPipeVision();
+  </script>
+</body>
+</html>
