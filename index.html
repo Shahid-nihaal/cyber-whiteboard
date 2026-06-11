@@ -244,5 +244,25 @@
 
     bootMediaPipeVision();
   </script>
+  <script>
+  // Force the mobile browser to save the heavy asset bundles locally on your phone
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('data:text/javascript;base64,' + btoa(`
+        const CACHE_NAME = 'cyber-whiteboard-v1';
+        const ASSETS = [
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js',
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker_full/float16/1/hand_landmarker_full.task'
+        ];
+        self.addEventListener('install', e => {
+          e.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)));
+        });
+        self.addEventListener('fetch', e => {
+          e.respondWith(caches.match(e.request).then(res => res || fetch(e.request)));
+        });
+      `), { scope: './' });
+    });
+  }
+</script>
 </body>
 </html>
